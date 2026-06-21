@@ -48,14 +48,14 @@ export default function OrdersPage() {
   const filtered = filter === 'all' ? orders : orders.filter(o => o.status === filter)
 
   return (
-    <div className="p-8">
+    <div className="p-4 md:p-8">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-zinc-900">Orders</h1>
         <p className="text-zinc-500 text-sm mt-1">Real-time order monitoring across all restaurants</p>
       </div>
 
       {/* Filter */}
-      <div className="flex gap-1 mb-6 bg-zinc-100 p-1 rounded-xl w-fit flex-wrap">
+      <div className="flex gap-1 mb-6 bg-zinc-100 p-1 rounded-xl flex-wrap overflow-x-auto">
         {(['all', ...STATUS_OPTIONS]).map(f => {
           const count = f === 'all' ? orders.length : orders.filter(o => o.status === f).length
           return (
@@ -77,7 +77,8 @@ export default function OrdersPage() {
         {filtered.length === 0 ? (
           <div className="py-16 text-center text-zinc-400 text-sm">No orders</div>
         ) : (
-          <table className="w-full">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px]">
             <thead>
               <tr className="border-b border-zinc-100 bg-zinc-50">
                 <th className="text-left px-6 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wide">Order</th>
@@ -155,6 +156,7 @@ export default function OrdersPage() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </div>

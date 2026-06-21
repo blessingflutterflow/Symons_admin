@@ -59,7 +59,7 @@ export default function RestaurantsPage() {
   }
 
   return (
-    <div className="p-8">
+    <div className="p-4 md:p-8">
       <div className="mb-8 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-zinc-900">Restaurants</h1>
@@ -93,7 +93,8 @@ export default function RestaurantsPage() {
             No {filter === 'all' ? '' : filter} restaurants
           </div>
         ) : (
-          <table className="w-full">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px]">
             <thead>
               <tr className="border-b border-zinc-100 bg-zinc-50">
                 <th className="text-left px-6 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wide">Restaurant</th>
@@ -181,6 +182,7 @@ export default function RestaurantsPage() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </div>

@@ -3,13 +3,14 @@
 import { useEffect, useState } from 'react'
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
-import { Save, Truck, CreditCard } from 'lucide-react'
+import { Save, Truck, Percent, Banknote } from 'lucide-react'
 
 const DEFAULT_FEE = 35
 
 export default function SettingsPage() {
   const [flatFee, setFlatFee] = useState(DEFAULT_FEE)
-  const [yocoSecretKey, setYocoSecretKey] = useState('')
+  const [commission, setCommission] = useState(0)
+  const [paystackSecretKey, setPaystackSecretKey] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -17,12 +18,15 @@ export default function SettingsPage() {
   useEffect(() => {
     Promise.all([
       getDoc(doc(db, 'settings', 'delivery')),
-      getDoc(doc(db, 'settings', 'yoco')),
-    ]).then(([deliverySnap, yocoSnap]) => {
+      getDoc(doc(db, 'settings', 'commission')),
+      getDoc(doc(db, 'settings', 'paystack')),
+    ]).then(([deliverySnap, commissionSnap, paystackSnap]) => {
       const fee = deliverySnap.data()?.flatFee
       if (typeof fee === 'number') setFlatFee(fee)
-      const secret = yocoSnap.data()?.secretKey
-      if (typeof secret === 'string') setYocoSecretKey(secret)
+      const pct = commissionSnap.data()?.percent
+      if (typeof pct === 'number') setCommission(pct)
+      const psSecret = paystackSnap.data()?.secretKey
+      if (typeof psSecret === 'string') setPaystackSecretKey(psSecret)
       setLoading(false)
     })
   }, [])
@@ -30,14 +34,9 @@ export default function SettingsPage() {
   async function save() {
     setSaving(true)
     await Promise.all([
-      setDoc(doc(db, 'settings', 'delivery'), {
-        flatFee,
-        updatedAt: serverTimestamp(),
-      }, { merge: true }),
-      setDoc(doc(db, 'settings', 'yoco'), {
-        secretKey: yocoSecretKey,
-        updatedAt: serverTimestamp(),
-      }, { merge: true }),
+      setDoc(doc(db, 'settings', 'delivery'), { flatFee, updatedAt: serverTimestamp() }, { merge: true }),
+      setDoc(doc(db, 'settings', 'commission'), { percent: commission, updatedAt: serverTimestamp() }, { merge: true }),
+      setDoc(doc(db, 'settings', 'paystack'), { secretKey: paystackSecretKey, updatedAt: serverTimestamp() }, { merge: true }),
     ])
     setSaving(false)
     setSaved(true)
@@ -53,10 +52,45 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="p-8 max-w-2xl space-y-6">
+    <div className="p-4 md:p-8 max-w-2xl space-y-6">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-zinc-900">Settings</h1>
         <p className="text-zinc-500 text-sm mt-1">Platform-wide configuration</p>
+      </div>
+
+      {/* Commission */}
+      <div className="bg-white rounded-2xl border border-zinc-200 p-6">
+        <div className="flex items-center gap-3 mb-1">
+          <div className="w-9 h-9 rounded-xl bg-[#1A0A00] flex items-center justify-center flex-shrink-0">
+            <Percent size={16} className="text-[#C8880A]" />
+          </div>
+          <h2 className="font-semibold text-zinc-900">Commission</h2>
+        </div>
+        <p className="text-sm text-zinc-500 mb-4 ml-12">
+          A markup added on top of every product price. Customers see the
+          marked-up price; the markup is the business&apos;s margin.
+        </p>
+        <div className="flex items-end gap-3 ml-12">
+          <div>
+            <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-1.5">
+              Commission rate
+            </label>
+            <div className="relative">
+              <input
+                type="number"
+                min={0}
+                step="0.1"
+                value={commission}
+                onChange={e => setCommission(Number(e.target.value))}
+                className="w-32 pl-3 pr-7 py-2 rounded-xl border border-zinc-200 text-sm focus:outline-none focus:border-zinc-400"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-zinc-400">%</span>
+            </div>
+          </div>
+          <p className="text-xs text-zinc-400 pb-2.5">
+            e.g. R100 item at {commission}% → customer pays R{(100 * (1 + commission / 100)).toFixed(2)}
+          </p>
+        </div>
       </div>
 
       {/* Delivery Fee */}
@@ -68,7 +102,8 @@ export default function SettingsPage() {
           <h2 className="font-semibold text-zinc-900">Delivery Fee</h2>
         </div>
         <p className="text-sm text-zinc-500 mb-4 ml-12">
-          A flat fee applied to every order, regardless of distance.
+          A flat fee applied to every order. This is what the driver is paid
+          automatically after each delivery.
         </p>
         <div className="flex items-end gap-3 ml-12">
           <div>
@@ -90,17 +125,17 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Yoco Payment Keys */}
+      {/* Paystack Keys */}
       <div className="bg-white rounded-2xl border border-zinc-200 p-6">
         <div className="flex items-center gap-3 mb-1">
           <div className="w-9 h-9 rounded-xl bg-[#1A0A00] flex items-center justify-center flex-shrink-0">
-            <CreditCard size={16} className="text-[#C8880A]" />
+            <Banknote size={16} className="text-[#C8880A]" />
           </div>
-          <h2 className="font-semibold text-zinc-900">Yoco Payment Keys</h2>
+          <h2 className="font-semibold text-zinc-900">Paystack Keys</h2>
         </div>
         <p className="text-sm text-zinc-500 mb-4 ml-12">
-          Secret key used by Cloud Functions to create Yoco checkout sessions.
-          Never expose this key in client-side code.
+          The single secret key used by Cloud Functions for customer payments,
+          refunds, and automatic driver payouts. Never expose it client-side.
         </p>
         <div className="flex items-end gap-3 ml-12">
           <div className="flex-1">
@@ -109,9 +144,9 @@ export default function SettingsPage() {
             </label>
             <input
               type="password"
-              value={yocoSecretKey}
-              onChange={e => setYocoSecretKey(e.target.value)}
-              placeholder="sk_test_..."
+              value={paystackSecretKey}
+              onChange={e => setPaystackSecretKey(e.target.value)}
+              placeholder="sk_live_..."
               className="w-full pl-3 pr-3 py-2 rounded-xl border border-zinc-200 text-sm focus:outline-none focus:border-zinc-400"
             />
           </div>

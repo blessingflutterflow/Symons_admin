@@ -347,17 +347,17 @@ export default function OperationsMapPage() {
   };
 
   return (
-    <div className="h-[calc(100vh-64px)] flex flex-col">
+    <div className="h-[calc(100vh-56px)] md:h-[calc(100vh-64px)] flex flex-col">
       {/* Header */}
-      <div className="p-4 border-b border-zinc-200 bg-white">
-        <div className="flex items-center justify-between">
+      <div className="p-3 md:p-4 border-b border-zinc-200 bg-white">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           <div>
-            <h1 className="text-2xl font-bold">Live Operations Map</h1>
-            <p className="text-sm text-muted-foreground">
+            <h1 className="text-lg md:text-2xl font-bold">Live Operations Map</h1>
+            <p className="text-xs md:text-sm text-muted-foreground">
               Real-time driver locations and active restaurants
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <Badge variant="outline" className="bg-[#FAF0DC] text-[#C8880A] border-[#E0A020]">
               <Car className="w-3 h-3 mr-1" />
               {drivers.length} Online Drivers
@@ -408,7 +408,7 @@ export default function OperationsMapPage() {
 
             {/* Drivers list — hidden when a panel is open */}
             {!selectedRestaurant && !selectedDriver && (
-              <div className="absolute top-4 right-4 w-64 max-h-[calc(100%-2rem)] overflow-auto">
+              <div className="absolute top-2 right-2 md:top-4 md:right-4 w-48 md:w-64 max-h-[calc(100%-1rem)] overflow-auto">
                 <Card>
                   <CardHeader className="py-3">
                     <CardTitle className="text-sm flex items-center gap-2">

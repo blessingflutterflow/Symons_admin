@@ -156,7 +156,7 @@ export default function RestaurantPanel({
   }
 
   return (
-    <div className="absolute top-0 right-0 h-full w-[420px] bg-white shadow-2xl flex flex-col z-10 border-l border-zinc-200">
+    <div className="absolute top-0 right-0 h-full w-full md:w-[420px] bg-white shadow-2xl flex flex-col z-10 border-l border-zinc-200">
       {/* Header */}
       <div className="px-5 py-4 bg-[#1A0A00] text-[#FAF0DC] flex items-start justify-between flex-shrink-0">
         <div className="flex items-center gap-3">

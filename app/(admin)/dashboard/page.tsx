@@ -54,8 +54,8 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="p-8">
-      <div className="mb-8">
+    <div className="p-4 md:p-8">
+      <div className="mb-6 md:mb-8">
         <h1 className="text-2xl font-bold text-zinc-900">Dashboard</h1>
         <p className="text-zinc-500 text-sm mt-1">Welcome back — here&apos;s what&apos;s happening on Symon&apos;s Kitchen</p>
       </div>
@@ -107,10 +107,10 @@ export default function DashboardPage() {
                     <p className="text-xs text-zinc-400">{order.deliveryAddress || '—'}</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2 md:gap-4">
                   <StatusBadge status={order.status} />
                   <span className="text-sm font-semibold text-zinc-900">R{(order.total || 0).toFixed(2)}</span>
-                  <span className="text-xs text-zinc-400 w-16 text-right">{timeAgo(order)}</span>
+                  <span className="hidden sm:block text-xs text-zinc-400 w-16 text-right">{timeAgo(order)}</span>
                 </div>
               </div>
             ))}

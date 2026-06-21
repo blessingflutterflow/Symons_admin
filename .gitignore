@@ -43,3 +43,5 @@ next-env.d.ts
 # firebase functions compiled output
 /functions/lib
 /functions/node_modules
+
+.vercel
