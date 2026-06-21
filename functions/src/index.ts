@@ -655,3 +655,38 @@ export const retryFailedPayouts = onSchedule(
     }
   }
 )
+
+// ─── 12. mapsProxy ────────────────────────────────────────────────────────────
+// Proxies Google Maps web-service calls (Directions / Geocoding / Places) so the
+// Flutter WEB build can use them. Those APIs don't return CORS headers, so a
+// browser can't call them directly; a server can. Mobile calls Google directly.
+const GOOGLE_MAPS_KEY = 'AIzaSyB4wHFe2xOgiBKAXmoENZbHwfa-bMQaE-U'
+const ALLOWED_MAPS_ENDPOINTS = new Set([
+  'directions/json',
+  'geocode/json',
+  'place/autocomplete/json',
+  'place/details/json',
+])
+
+export const mapsProxy = onCall(
+  { region: 'africa-south1' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Not authenticated.')
+
+    const { endpoint, params } = request.data as {
+      endpoint: string
+      params: Record<string, string>
+    }
+    if (!ALLOWED_MAPS_ENDPOINTS.has(endpoint)) {
+      throw new HttpsError('invalid-argument', 'Endpoint not allowed.')
+    }
+
+    const usp = new URLSearchParams({ ...(params || {}), key: GOOGLE_MAPS_KEY })
+    const res = await fetch(`https://maps.googleapis.com/maps/api/${endpoint}?${usp.toString()}`)
+    if (!res.ok) {
+      console.error(`mapsProxy ${endpoint} failed: ${res.status}`)
+      throw new HttpsError('internal', 'Maps request failed.')
+    }
+    return res.json()
+  }
+)
