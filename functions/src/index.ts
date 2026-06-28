@@ -8,13 +8,20 @@ const db = admin.firestore()
 
 // ─── FCM helpers ──────────────────────────────────────────────────────────────
 
-/** Send to a customer — reads fcmToken from users/{userId} */
-async function sendFCM(userId: string, title: string, body: string, data?: Record<string, string>) {
+/** Send to a customer — reads fcmToken from users/{userId}.
+ *  Pass [android] to override the Android channel/sound (e.g. the ring). */
+async function sendFCM(
+  userId: string,
+  title: string,
+  body: string,
+  data?: Record<string, string>,
+  android?: admin.messaging.AndroidConfig,
+) {
   try {
     const snap = await db.collection('users').doc(userId).get()
     const token = snap.data()?.fcmToken as string | undefined
     if (!token) return
-    await admin.messaging().send({ token, notification: { title, body }, data })
+    await admin.messaging().send({ token, notification: { title, body }, data, ...(android ? { android } : {}) })
   } catch (e) {
     console.error('FCM (user) error:', e)
   }
@@ -32,18 +39,25 @@ async function sendFCMToRestaurant(restaurantId: string, title: string, body: st
   }
 }
 
-/**
- * Broadcast to every driver currently subscribed to the 'available_drivers'
- * topic. Symon's Kitchen uses a claim model — any online driver can accept a
- * 'driver_assigned' order, so we notify all of them rather than a single one.
- */
-async function sendFCMToDriversTopic(title: string, body: string, data?: Record<string, string>) {
+/** Ring a restaurant like an incoming call when a new order arrives. Sent as a
+ *  DATA-ONLY, high-priority message (no `notification` block) so the app's
+ *  background handler runs — even when the app is swiped away/killed — and shows
+ *  the continuously-ringing CallKit incoming-call screen. */
+async function ringRestaurantNewOrder(restaurantId: string, orderId: string, restaurantName: string) {
   try {
-    await admin.messaging().send({ topic: 'available_drivers', notification: { title, body }, data })
+    const snap = await db.collection('restaurants').doc(restaurantId).get()
+    const token = snap.data()?.fcmToken as string | undefined
+    if (!token) return
+    await admin.messaging().send({
+      token,
+      data: { type: 'new_order', orderId, restaurantId, restaurantName },
+      android: { priority: 'high' },
+    })
   } catch (e) {
-    console.error('FCM (drivers topic) error:', e)
+    console.error('FCM (restaurant ring) error:', e)
   }
 }
+
 
 // ─── 1. notifyNewOrder ─────────────────────────────────────────────────────────
 // Fires when a customer places a new order — alerts the restaurant owner.
@@ -55,11 +69,10 @@ export const notifyNewOrder = onDocumentCreated('orders/{orderId}', async (event
   const restaurantId = order.restaurantId as string | undefined
   if (!restaurantId) return
 
-  await sendFCMToRestaurant(
+  await ringRestaurantNewOrder(
     restaurantId,
-    '🛎️ New Order!',
-    `New order received — R${order.total}.`,
-    { orderId: event.params.orderId, restaurantId, type: 'new_order' }
+    event.params.orderId,
+    (order.restaurantName as string | undefined) ?? 'Symon\'s Kitchin',
   )
 })
 
@@ -83,11 +96,27 @@ export const notifyOrderStatus = onDocumentUpdated('orders/{orderId}', async (ev
   const msg = MESSAGES[after.status]
   if (!msg || !after.customerId) return
 
+  // Only the "on the way" alert rings with the custom bundled sound; every
+  // other status uses the normal default notification channel.
+  const ringAndroid: admin.messaging.AndroidConfig | undefined =
+    after.status === 'out_for_delivery'
+      ? {
+          priority: 'high',
+          notification: {
+            channelId: 'order_on_way_ring',
+            sound: 'delivery_ring',
+            priority: 'max',
+            defaultVibrateTimings: true,
+          },
+        }
+      : undefined
+
   await sendFCM(
     after.customerId as string,
     msg.title,
     msg.body,
-    { orderId: event.params.orderId, status: after.status as string, type: 'order_update' }
+    { orderId: event.params.orderId, status: after.status as string, type: 'order_update' },
+    ringAndroid,
   )
 })
 
@@ -101,11 +130,25 @@ export const notifyDriversNewDelivery = onDocumentUpdated('orders/{orderId}', as
   if (before.status === after.status) return
   if (after.status !== 'driver_assigned') return
 
-  await sendFCMToDriversTopic(
-    '🛵 New Delivery Available!',
-    `Pickup from ${after.restaurantName ?? 'a restaurant'}`,
-    { orderId: event.params.orderId, type: 'new_delivery' }
-  )
+  // DATA-ONLY, high-priority broadcast (no `notification` block) so each online
+  // driver's app background handler runs — even when the app is swiped
+  // away/killed — and shows the continuously-ringing CallKit incoming-call
+  // screen over the lock screen, just like an Uber/inDrive request.
+  const restaurantName = (after.restaurantName as string | undefined) ?? 'a restaurant'
+  try {
+    await admin.messaging().send({
+      topic: 'available_drivers',
+      data: {
+        type: 'new_delivery',
+        orderId: event.params.orderId,
+        restaurantName,
+        restaurantId: (after.restaurantId as string | undefined) ?? '',
+      },
+      android: { priority: 'high' },
+    })
+  } catch (e) {
+    console.error('FCM (new delivery) error:', e)
+  }
 })
 
 // ─── 4. notifyCancellationRequest ───────────────────────────────────────────────
@@ -325,13 +368,12 @@ export const verifyPayment = onCall(
       paidAt:        admin.firestore.FieldValue.serverTimestamp(),
     })
 
-    // Notify restaurant owner — new order waiting
+    // Ring restaurant owner like an incoming call — new (paid) order waiting
     if (order.restaurantId) {
-      await sendFCMToRestaurant(
+      await ringRestaurantNewOrder(
         order.restaurantId as string,
-        '🛎️ New Order!',
-        `Payment confirmed — R${order.total} order is waiting for you.`,
-        { orderId, restaurantId: order.restaurantId as string, type: 'new_order' }
+        orderId,
+        (order.restaurantName as string | undefined) ?? 'Symon\'s Kitchin',
       )
     }
 
