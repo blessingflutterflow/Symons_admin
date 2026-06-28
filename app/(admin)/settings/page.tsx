@@ -10,7 +10,7 @@ const DEFAULT_FEE = 35
 export default function SettingsPage() {
   const [flatFee, setFlatFee] = useState(DEFAULT_FEE)
   const [commission, setCommission] = useState(0)
-  const [paystackSecretKey, setPaystackSecretKey] = useState('')
+  const [yocoSecretKey, setYocoSecretKey] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -19,14 +19,14 @@ export default function SettingsPage() {
     Promise.all([
       getDoc(doc(db, 'settings', 'delivery')),
       getDoc(doc(db, 'settings', 'commission')),
-      getDoc(doc(db, 'settings', 'paystack')),
-    ]).then(([deliverySnap, commissionSnap, paystackSnap]) => {
+      getDoc(doc(db, 'settings', 'yoco')),
+    ]).then(([deliverySnap, commissionSnap, yocoSnap]) => {
       const fee = deliverySnap.data()?.flatFee
       if (typeof fee === 'number') setFlatFee(fee)
       const pct = commissionSnap.data()?.percent
       if (typeof pct === 'number') setCommission(pct)
-      const psSecret = paystackSnap.data()?.secretKey
-      if (typeof psSecret === 'string') setPaystackSecretKey(psSecret)
+      const yocoSecret = yocoSnap.data()?.secretKey
+      if (typeof yocoSecret === 'string') setYocoSecretKey(yocoSecret)
       setLoading(false)
     })
   }, [])
@@ -36,7 +36,7 @@ export default function SettingsPage() {
     await Promise.all([
       setDoc(doc(db, 'settings', 'delivery'), { flatFee, updatedAt: serverTimestamp() }, { merge: true }),
       setDoc(doc(db, 'settings', 'commission'), { percent: commission, updatedAt: serverTimestamp() }, { merge: true }),
-      setDoc(doc(db, 'settings', 'paystack'), { secretKey: paystackSecretKey, updatedAt: serverTimestamp() }, { merge: true }),
+      setDoc(doc(db, 'settings', 'yoco'), { secretKey: yocoSecretKey, updatedAt: serverTimestamp() }, { merge: true }),
     ])
     setSaving(false)
     setSaved(true)
@@ -102,8 +102,8 @@ export default function SettingsPage() {
           <h2 className="font-semibold text-zinc-900">Delivery Fee</h2>
         </div>
         <p className="text-sm text-zinc-500 mb-4 ml-12">
-          A flat fee applied to every order. This is what the driver is paid
-          automatically after each delivery.
+          A flat fee applied to every order. This is what the driver earns per
+          delivery (paid out manually under Driver Payouts).
         </p>
         <div className="flex items-end gap-3 ml-12">
           <div>
@@ -125,17 +125,17 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Paystack Keys */}
+      {/* Yoco Key */}
       <div className="bg-white rounded-2xl border border-zinc-200 p-6">
         <div className="flex items-center gap-3 mb-1">
           <div className="w-9 h-9 rounded-xl bg-[#1A0A00] flex items-center justify-center flex-shrink-0">
             <Banknote size={16} className="text-[#C8880A]" />
           </div>
-          <h2 className="font-semibold text-zinc-900">Paystack Keys</h2>
+          <h2 className="font-semibold text-zinc-900">Yoco</h2>
         </div>
         <p className="text-sm text-zinc-500 mb-4 ml-12">
-          The single secret key used by Cloud Functions for customer payments,
-          refunds, and automatic driver payouts. Never expose it client-side.
+          The Yoco secret key used by Cloud Functions for customer payments and
+          refunds. Never expose it client-side.
         </p>
         <div className="flex items-end gap-3 ml-12">
           <div className="flex-1">
@@ -144,8 +144,8 @@ export default function SettingsPage() {
             </label>
             <input
               type="password"
-              value={paystackSecretKey}
-              onChange={e => setPaystackSecretKey(e.target.value)}
+              value={yocoSecretKey}
+              onChange={e => setYocoSecretKey(e.target.value)}
               placeholder="sk_live_..."
               className="w-full pl-3 pr-3 py-2 rounded-xl border border-zinc-200 text-sm focus:outline-none focus:border-zinc-400"
             />

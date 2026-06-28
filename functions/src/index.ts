@@ -1,7 +1,6 @@
 import * as admin from 'firebase-admin'
 import { onDocumentCreated, onDocumentUpdated } from 'firebase-functions/v2/firestore'
 import { onCall, HttpsError } from 'firebase-functions/v2/https'
-import { onSchedule } from 'firebase-functions/v2/scheduler'
 
 admin.initializeApp()
 const db = admin.firestore()
@@ -191,36 +190,19 @@ export const notifyRestaurantApproved = onDocumentUpdated('restaurants/{restaura
   )
 })
 
-// ─── Paystack helpers ─────────────────────────────────────────────────────────
+// ─── Yoco helpers ─────────────────────────────────────────────────────────────
 
-const PAYSTACK_API = 'https://api.paystack.co'
+const YOCO_API = 'https://payments.yoco.com/api'
 
-async function getPaystackSecretKey(): Promise<string> {
-  const snap = await db.collection('settings').doc('paystack').get()
+async function getYocoSecretKey(): Promise<string> {
+  const snap = await db.collection('settings').doc('yoco').get()
   const key = snap.data()?.secretKey as string | undefined
-  if (!key) throw new HttpsError('failed-precondition', 'Paystack secret key not configured. Add it in Admin → Settings.')
+  if (!key) throw new HttpsError('failed-precondition', 'Yoco secret key not configured. Add it in Admin → Settings.')
   return key
 }
 
-/** Initiates a single Paystack Transfer. Returns the parsed Paystack response. */
-async function sendPaystackTransfer(
-  secretKey: string, recipientCode: string, amountRands: number, reason: string,
-): Promise<{ status: boolean; message: string; data?: { transfer_code: string; status: string } }> {
-  const res = await fetch(`${PAYSTACK_API}/transfer`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${secretKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      source: 'balance',
-      amount: Math.round(amountRands * 100),
-      recipient: recipientCode,
-      reason,
-    }),
-  })
-  return res.json() as Promise<{ status: boolean; message: string; data?: { transfer_code: string; status: string } }>
-}
-
 // ─── 5. initializePayment ─────────────────────────────────────────────────────
-// Creates a Paystack transaction and a pending order in Firestore.
+// Creates a Yoco Online Checkout and a pending order in Firestore.
 // Called from the Flutter cart screen just before opening the checkout.
 export const initializePayment = onCall(
   { region: 'africa-south1' },
@@ -246,52 +228,62 @@ export const initializePayment = onCall(
       successBaseUrl?: string
     }
 
-    const secretKey = await getPaystackSecretKey()
+    const secretKey = await getYocoSecretKey()
     const uid = request.auth.uid
-    // Paystack requires a customer email; fall back to a deterministic address.
     const email = (request.auth.token.email as string | undefined) ?? `${uid}@symonskitchen.app`
-    const reference = `SK-${Date.now()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`
     const amountCents = Math.round(amountRands * 100)
     const subtotal = amountRands - deliveryFee
 
-    // Pre-generate the order document ID so we can embed it in the callback URL.
+    // Pre-generate the order id so we can embed it in the redirect URLs.
     const orderRef = db.collection('orders').doc()
     const orderId = orderRef.id
 
-    // Paystack appends ?reference=...&trxref=... to the callback URL. On web we
-    // send the Flutter app's success route; on mobile the WebView intercepts
-    // the placeholder domain before it resolves.
-    const callbackUrl = successBaseUrl
+    // Redirect URLs. On web we use the Flutter success route (with orderId); on
+    // mobile the WebView intercepts these placeholder paths before they load.
+    const successUrl = successBaseUrl
       ? `${successBaseUrl}?orderId=${orderId}`
       : 'https://symonskitchen.app/payment/success'
+    const cancelUrl = successBaseUrl
+      ? `${successBaseUrl.replace('/payment/success', '/payment/cancel')}?orderId=${orderId}`
+      : 'https://symonskitchen.app/payment/cancel'
+    const failureUrl = successBaseUrl
+      ? `${successBaseUrl.replace('/payment/success', '/payment/failed')}?orderId=${orderId}`
+      : 'https://symonskitchen.app/payment/failed'
 
-    const psRes = await fetch(`${PAYSTACK_API}/transaction/initialize`, {
+    const yRes = await fetch(`${YOCO_API}/checkouts`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${secretKey}`,
         'Content-Type': 'application/json',
+        'Idempotency-Key': orderId,
       },
       body: JSON.stringify({
-        email,
         amount: amountCents,
         currency: 'ZAR',
-        reference,
-        callback_url: callbackUrl,
-        metadata: { orderId, restaurantId, customerId: uid, customerName: customerName ?? null },
+        successUrl,
+        cancelUrl,
+        failureUrl,
+        metadata: {
+          orderId,
+          restaurantId,
+          customerId: uid,
+          ...(customerName ? { customerName } : {}),
+        },
       }),
     })
 
-    const ps = await psRes.json() as {
-      status: boolean
-      message: string
-      data?: { authorization_url: string; access_code: string; reference: string }
+    const y = await yRes.json() as {
+      id?: string
+      redirectUrl?: string
+      status?: string
+      message?: string
     }
-    if (!ps.status || !ps.data) {
-      console.error('Paystack init failed:', ps.message)
-      throw new HttpsError('internal', ps.message || 'Could not start payment.')
+    if (!yRes.ok || !y.id || !y.redirectUrl) {
+      console.error('Yoco checkout failed:', y.message ?? JSON.stringify(y))
+      throw new HttpsError('internal', y.message || 'Could not start payment.')
     }
 
-    // Create the pending order using the pre-generated ref
+    // Create the pending order. The Yoco checkout id is our payment reference.
     await orderRef.set({
       customerId:       uid,
       customerEmail:    email,
@@ -307,20 +299,21 @@ export const initializePayment = onCall(
       ...(deliveryLng != null && { deliveryLng }),
       status:           'pending_payment',
       paymentStatus:    'pending',
-      paymentReference: reference,
+      paymentReference: y.id,
+      paymentProvider:  'yoco',
       createdAt:        admin.firestore.FieldValue.serverTimestamp(),
     })
 
     return {
-      authorizationUrl: ps.data.authorization_url,
-      reference,
+      authorizationUrl: y.redirectUrl,
+      reference: y.id,
       orderId,
     }
   }
 )
 
 // ─── 6. verifyPayment ─────────────────────────────────────────────────────────
-// Called from Flutter after checkout. Confirms the charge with Paystack,
+// Called from Flutter after checkout. Confirms the charge with Yoco,
 // promotes the order to 'placed', and notifies customer + restaurant.
 export const verifyPayment = onCall(
   { region: 'africa-south1' },
@@ -339,21 +332,23 @@ export const verifyPayment = onCall(
     const reference = providedReference || (order.paymentReference as string | undefined)
     if (!reference) throw new HttpsError('failed-precondition', 'No payment reference for this order.')
 
-    const secretKey = await getPaystackSecretKey()
+    const secretKey = await getYocoSecretKey()
 
-    // Verify the transaction with Paystack
-    const psRes = await fetch(`${PAYSTACK_API}/transaction/verify/${reference}`, {
+    // Verify by fetching the checkout from Yoco (server-side, authoritative).
+    const yRes = await fetch(`${YOCO_API}/checkouts/${reference}`, {
       headers: { 'Authorization': `Bearer ${secretKey}` },
     })
-    const ps = await psRes.json() as { status: boolean; message: string; data?: { status: string } }
-    if (!ps.status || !ps.data) {
-      console.error('Paystack verify failed:', ps.message)
-      throw new HttpsError('internal', 'Could not verify payment with Paystack.')
+    const y = await yRes.json() as { id?: string; status?: string; paymentId?: string; message?: string }
+    if (!yRes.ok || !y.status) {
+      console.error('Yoco verify failed:', y.message ?? JSON.stringify(y))
+      throw new HttpsError('internal', 'Could not verify payment with Yoco.')
     }
 
-    if (ps.data.status !== 'success') {
-      console.warn(`Paystack transaction ${reference} status: ${ps.data.status}`)
-      return { status: ps.data.status, orderId }
+    // A completed checkout (or one carrying a paymentId) means payment succeeded.
+    const paid = y.status === 'completed' || !!y.paymentId
+    if (!paid) {
+      console.warn(`Yoco checkout ${reference} status: ${y.status}`)
+      return { status: y.status, orderId }
     }
 
     if (order.status !== 'pending_payment') {
@@ -391,7 +386,7 @@ export const verifyPayment = onCall(
 
 // ─── 7. processRefund ──────────────────────────────────────────────────────────
 // Called by the restaurant when they confirm a customer's cancellation request.
-// Calls Paystack's Refund API then marks the order cancelled + notifies the customer.
+// Calls Yoco's Refund API then marks the order cancelled + notifies the customer.
 export const processRefund = onCall(
   { region: 'africa-south1' },
   async (request) => {
@@ -407,33 +402,35 @@ export const processRefund = onCall(
       throw new HttpsError('failed-precondition', 'Order is not pending cancellation.')
     }
 
-    // Attempt Paystack refund. Non-blocking — if it fails we still cancel the
+    // Attempt Yoco refund. Non-blocking — if it fails we still cancel the
     // order and notify the customer, flagging it refund_pending for follow-up.
     const reference = order.paymentReference as string | undefined
     let paymentStatus = 'cancelled'
 
     if (reference) {
       try {
-        const secretKey = await getPaystackSecretKey()
-        const amountCents = Math.round((order.total as number) * 100)
-        const refundRes = await fetch(`${PAYSTACK_API}/refund`, {
+        const secretKey = await getYocoSecretKey()
+        // Yoco refunds a payment by its checkout id (full refund when no amount).
+        const refundRes = await fetch(`${YOCO_API}/checkouts/${reference}/refund`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${secretKey}`,
             'Content-Type': 'application/json',
+            'Idempotency-Key': `refund-${reference}`,
           },
-          body: JSON.stringify({ transaction: reference, amount: amountCents }),
         })
-        const refund = await refundRes.json() as { status: boolean; message: string }
-        if (refund.status) {
+        const refund = await refundRes.json() as { status?: string; message?: string }
+        const ok = refundRes.ok &&
+          ['successful', 'pending', 'created', 'processing'].includes(refund.status ?? '')
+        if (ok) {
           paymentStatus = 'refunded'
-          console.log(`Paystack refund initiated for ${reference}, R${order.total}`)
+          console.log(`Yoco refund initiated for ${reference}, R${order.total}`)
         } else {
-          console.error(`Paystack refund failed for ${reference}:`, refund.message)
+          console.error(`Yoco refund failed for ${reference}:`, refund.message ?? JSON.stringify(refund))
           paymentStatus = 'refund_pending'
         }
       } catch (e) {
-        console.error('Paystack refund error:', e)
+        console.error('Yoco refund error:', e)
         paymentStatus = 'refund_pending'
       }
     }
@@ -462,243 +459,63 @@ export const processRefund = onCall(
   }
 )
 
-// ─── 8. registerPaystackRecipient ─────────────────────────────────────────────
-// Registers a driver's bank account with Paystack and stores the recipient code
-// on their driver doc so future payouts can be processed instantly.
-export const registerPaystackRecipient = onCall(
-  { region: 'africa-south1' },
-  async (request) => {
-    if (!request.auth) throw new HttpsError('unauthenticated', 'Not authenticated.')
+// Driver bank details are saved directly to the driver doc by the app (manual
+// payout model) — no provider recipient registration or account resolution.
 
-    const { accountNumber, bankCode, bankName, accountName } = request.data as {
-      accountNumber: string
-      bankCode: string
-      bankName: string
-      accountName: string
-    }
-
-    const secretKey = await getPaystackSecretKey()
-
-    const res = await fetch(`${PAYSTACK_API}/transferrecipient`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${secretKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        type: 'nuban',
-        name: accountName,
-        account_number: accountNumber,
-        bank_code: bankCode,
-        currency: 'ZAR',
-      }),
-    })
-
-    const data = await res.json() as { status: boolean; message: string; data: { recipient_code: string } }
-    if (!data.status) {
-      console.error('Paystack recipient registration failed:', data.message)
-      throw new HttpsError('internal', data.message || 'Failed to register bank account with Paystack.')
-    }
-
-    const recipientCode = data.data.recipient_code
-
-    await db.collection('drivers').doc(request.auth.uid).update({
-      bankName,
-      bankCode,
-      bankAccountNumber: accountNumber,
-      paystackRecipientCode: recipientCode,
-      bankUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    })
-
-    return { recipientCode }
-  }
-)
-
-// ─── 9. resolveBankAccount ────────────────────────────────────────────────────
-// Validates a driver's bank account with Paystack and returns the registered
-// account-holder name, so the driver can confirm before saving.
-export const resolveBankAccount = onCall(
-  { region: 'africa-south1' },
-  async (request) => {
-    if (!request.auth) throw new HttpsError('unauthenticated', 'Not authenticated.')
-
-    const { accountNumber, bankCode } = request.data as {
-      accountNumber: string
-      bankCode: string
-    }
-    if (!accountNumber || !bankCode) throw new HttpsError('invalid-argument', 'Account number and bank are required.')
-
-    const secretKey = await getPaystackSecretKey()
-    const res = await fetch(
-      `${PAYSTACK_API}/bank/resolve?account_number=${encodeURIComponent(accountNumber)}&bank_code=${encodeURIComponent(bankCode)}`,
-      { headers: { 'Authorization': `Bearer ${secretKey}` } }
-    )
-    const data = await res.json() as { status: boolean; message: string; data?: { account_name: string } }
-    if (!data.status || !data.data) {
-      console.error('Paystack account resolve failed:', data.message)
-      throw new HttpsError('invalid-argument', data.message || 'Could not verify this bank account.')
-    }
-
-    return { accountName: data.data.account_name }
-  }
-)
-
-// ─── 10. payDriverForDelivery ─────────────────────────────────────────────────
-// Fires when an order is marked 'delivered'. Automatically transfers that
-// order's delivery fee to the driver's registered bank account via Paystack —
-// no manual withdrawal needed. Each order pays out exactly once (idempotent via
-// payoutDone flag).
+// ─── 8. payDriverForDelivery (manual payout ledger) ───────────────────────────
+// Fires when an order is marked 'delivered'. Records what the driver is owed
+// (the order's delivery fee) as a 'pending' entry in the `payouts` ledger.
+// Yoco has no transfers API, so the business pays drivers out-of-band and marks
+// each payout 'paid' in Admin → Driver Payouts. Idempotent via the payoutDone flag.
 export const payDriverForDelivery = onDocumentUpdated('orders/{orderId}', async (event) => {
   const before = event.data?.before.data()
   const after = event.data?.after.data()
   if (!before || !after) return
   if (before.status === after.status) return
   if (after.status !== 'delivered') return
-  if (after.payoutDone === true) return // already paid out
+  if (after.payoutDone === true) return // already recorded
 
   const orderId = event.params.orderId
   const driverId = after.driverId as string | undefined
   const deliveryFee = (after.deliveryFee as number | undefined) ?? 0
   if (!driverId || deliveryFee <= 0) return
 
-  // Mark immediately to prevent double-payout on rapid re-triggers
+  // Mark immediately to prevent a duplicate ledger entry on rapid re-triggers.
   await db.collection('orders').doc(orderId).update({ payoutDone: true })
 
   const driverSnap = await db.collection('drivers').doc(driverId).get()
   const driver = driverSnap.data()
 
-  const recordPayout = (status: string, transferCode?: string) =>
-    db.collection('payouts').add({
-      driverId,
-      driverName:           driver?.name ?? '',
-      orderId,
-      amountRands:          deliveryFee,
-      status,
-      ...(transferCode ? { paystackTransferCode: transferCode } : {}),
-      bankName:             driver?.bankName ?? '',
-      bankAccountNumber:    driver?.bankAccountNumber ?? '',
-      createdAt:            admin.firestore.FieldValue.serverTimestamp(),
-    })
+  await db.collection('payouts').add({
+    driverId,
+    driverName:        driver?.name ?? '',
+    orderId,
+    amountRands:       deliveryFee,
+    status:            'pending', // pending → 'paid' once the admin pays it out
+    bankName:          driver?.bankName ?? '',
+    bankAccountNumber: driver?.bankAccountNumber ?? '',
+    bankAccountName:   driver?.bankAccountName ?? '',
+    createdAt:         admin.firestore.FieldValue.serverTimestamp(),
+  })
 
-  const notifyDriver = (title: string, body: string) => {
-    const token = driver?.fcmToken as string | undefined
-    if (!token) return Promise.resolve()
-    return admin.messaging().send({ token, notification: { title, body }, data: { type: 'payout', orderId } })
-      .catch(e => console.error('Driver payout FCM error:', e))
-  }
-
-  // No bank account registered yet → record as pending, prompt the driver
-  const recipientCode = driver?.paystackRecipientCode as string | undefined
-  if (!recipientCode) {
-    await recordPayout('recipient_missing')
-    await notifyDriver('⚠️ Add your bank account', `You earned R${deliveryFee.toFixed(2)} — add your bank details to receive it.`)
-    return
-  }
-
-  // Initiate the Paystack transfer
-  try {
-    const secretKey = await getPaystackSecretKey()
-    const data = await sendPaystackTransfer(
-      secretKey, recipientCode, deliveryFee, `Symon's Kitchen delivery payout - order ${orderId}`,
-    )
-
-    if (data.status && data.data) {
-      await recordPayout(data.data.status === 'success' ? 'success' : data.data.status, data.data.transfer_code)
-      await notifyDriver('💸 Payout sent', `R${deliveryFee.toFixed(2)} for your delivery is on its way to your bank.`)
-    } else {
-      console.error(`Paystack transfer failed for order ${orderId}:`, data.message)
-      await recordPayout('failed')
-      await notifyDriver('Payout pending', `We couldn't send your R${deliveryFee.toFixed(2)} payout yet. It will be retried automatically.`)
-    }
-  } catch (e) {
-    console.error(`Paystack transfer error for order ${orderId}:`, e)
-    await recordPayout('failed')
+  // Let the driver know a payout was added to their wallet.
+  const token = driver?.fcmToken as string | undefined
+  if (token) {
+    await admin.messaging().send({
+      token,
+      notification: {
+        title: '💰 You earned a payout',
+        body: `R${deliveryFee.toFixed(2)} for your delivery has been added to your wallet.`,
+      },
+      data: { type: 'payout', orderId },
+    }).catch(e => console.error('Driver payout FCM error:', e))
   }
 })
 
-// ─── 11. retryFailedPayouts ───────────────────────────────────────────────────
-// Runs on a schedule and re-attempts every payout that hasn't succeeded yet
-// (status 'failed' or 'recipient_missing'). This makes payouts fully automatic:
-// once the Paystack account is approved for Transfers — or once a driver finally
-// adds their bank account — the next run clears the backlog with no manual step.
-// NOTE: Cloud Scheduler is not available in africa-south1, so this scheduled
-// function runs in europe-west1. It still reads/writes the same Firestore.
-export const retryFailedPayouts = onSchedule(
-  { schedule: 'every 3 hours', region: 'europe-west1' },
-  async () => {
-    const snap = await db
-      .collection('payouts')
-      .where('status', 'in', ['failed', 'recipient_missing'])
-      .get()
+// (Scheduled auto-retry of payouts removed — payouts are now settled manually
+//  by the admin under Driver Payouts, so there is nothing to auto-retry.)
 
-    if (snap.empty) {
-      console.log('retryFailedPayouts: nothing to retry')
-      return
-    }
-
-    let secretKey: string
-    try {
-      secretKey = await getPaystackSecretKey()
-    } catch (e) {
-      console.error('retryFailedPayouts: no Paystack key configured', e)
-      return
-    }
-
-    for (const doc of snap.docs) {
-      const payout = doc.data()
-      const driverId = payout.driverId as string | undefined
-      const amountRands = (payout.amountRands as number | undefined) ?? 0
-      if (!driverId || amountRands <= 0) continue
-
-      // Re-read the driver to pick up a bank account added since the last attempt
-      const driverSnap = await db.collection('drivers').doc(driverId).get()
-      const driver = driverSnap.data()
-      const recipientCode = driver?.paystackRecipientCode as string | undefined
-      if (!recipientCode) continue // still no bank account — leave as recipient_missing
-
-      try {
-        const data = await sendPaystackTransfer(
-          secretKey, recipientCode, amountRands,
-          `Symon's Kitchen delivery payout (retry) - order ${payout.orderId ?? doc.id}`,
-        )
-
-        if (data.status && data.data) {
-          await doc.ref.update({
-            status: data.data.status === 'success' ? 'success' : data.data.status,
-            paystackTransferCode: data.data.transfer_code,
-            bankName: driver?.bankName ?? payout.bankName ?? '',
-            bankAccountNumber: driver?.bankAccountNumber ?? payout.bankAccountNumber ?? '',
-            retryCount: (payout.retryCount ?? 0) + 1,
-            lastRetryAt: admin.firestore.FieldValue.serverTimestamp(),
-          })
-
-          const token = driver?.fcmToken as string | undefined
-          if (token) {
-            await admin.messaging().send({
-              token,
-              notification: {
-                title: '💸 Payout sent',
-                body: `Your R${amountRands.toFixed(2)} delivery payout is on its way to your bank.`,
-              },
-              data: { type: 'payout' },
-            }).catch(e => console.error('retry payout FCM error:', e))
-          }
-          console.log(`retryFailedPayouts: paid out ${doc.id} (R${amountRands})`)
-        } else {
-          await doc.ref.update({
-            retryCount: (payout.retryCount ?? 0) + 1,
-            lastRetryAt: admin.firestore.FieldValue.serverTimestamp(),
-          })
-          console.warn(`retryFailedPayouts: still failing ${doc.id}: ${data.message}`)
-        }
-      } catch (e) {
-        console.error(`retryFailedPayouts: error on ${doc.id}`, e)
-      }
-    }
-  }
-)
-
-// ─── 12. mapsProxy ────────────────────────────────────────────────────────────
+// ─── 9. mapsProxy ─────────────────────────────────────────────────────────────
 // Proxies Google Maps web-service calls (Directions / Geocoding / Places) so the
 // Flutter WEB build can use them. Those APIs don't return CORS headers, so a
 // browser can't call them directly; a server can. Mobile calls Google directly.
