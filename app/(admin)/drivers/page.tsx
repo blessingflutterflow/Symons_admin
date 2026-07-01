@@ -25,6 +25,7 @@ interface Driver {
   phone: string
   email?: string
   idNumber: string
+  idType?: 'sa_id' | 'passport'
   licenceNumber: string
   vehicleType: string
   vehicleReg: string
@@ -251,7 +252,7 @@ export default function DriversPage() {
                     )}
                     <div className="flex items-center gap-2">
                       <FileText className="w-4 h-4 text-muted-foreground" />
-                      <span>ID: {selectedDriver.idNumber || '—'}</span>
+                      <span>{selectedDriver.idType === 'passport' ? 'Passport' : 'ID'}: {selectedDriver.idNumber || '—'}</span>
                     </div>
                   </div>
                 </div>
